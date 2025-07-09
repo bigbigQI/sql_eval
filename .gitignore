@@ -1,0 +1,5 @@
+*.log
+spider_data/
+results/
+plan.md
+__pycache__/
