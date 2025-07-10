@@ -31,13 +31,13 @@ class ResultAnalyzer:
         """初始化结果分析器"""
         self.analysis_results: Dict[str, Any] = {}
     
-    def analyze_results(self, evaluation_results: List[Tuple[EvaluationResult, EvaluationMetrics]], 
+    def analyze_results(self, evaluation_results: List[Dict[str, Any]], 
                        sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        分析评估结果
+        分析评估结果（支持多轨迹）
         
         Args:
-            evaluation_results: 评估结果列表
+            evaluation_results: 评估结果列表（新格式，包含多轨迹）
             sample_data: 样本数据列表
             
         Returns:
@@ -46,26 +46,26 @@ class ResultAnalyzer:
         if not evaluation_results:
             return {"error": "No evaluation results to analyze"}
         
-        # 基本统计分析
-        basic_stats = self._analyze_basic_statistics(evaluation_results)
+        # 基本统计分析（样本级别和轨迹级别）
+        basic_stats = self._analyze_basic_statistics_multi_trajectory(evaluation_results)
         
         # 错误类型分析
-        error_analysis = self._analyze_error_types(evaluation_results)
+        error_analysis = self._analyze_error_types_multi_trajectory(evaluation_results)
         
         # 性能分析
-        performance_analysis = self._analyze_performance(evaluation_results)
+        performance_analysis = self._analyze_performance_multi_trajectory(evaluation_results)
         
         # 难度分析（如果有难度信息）
-        difficulty_analysis = self._analyze_by_difficulty(evaluation_results, sample_data)
+        difficulty_analysis = self._analyze_by_difficulty_multi_trajectory(evaluation_results, sample_data)
         
         # 数据源分析
-        data_source_analysis = self._analyze_by_data_source(evaluation_results, sample_data)
+        data_source_analysis = self._analyze_by_data_source_multi_trajectory(evaluation_results, sample_data)
         
         # 时间分析
-        time_analysis = self._analyze_time_distribution(evaluation_results)
+        time_analysis = self._analyze_time_distribution_multi_trajectory(evaluation_results)
         
         # 综合分析
-        comprehensive_analysis = self._comprehensive_analysis(evaluation_results, sample_data)
+        comprehensive_analysis = self._comprehensive_analysis_multi_trajectory(evaluation_results, sample_data)
         
         # 构建完整分析结果
         analysis_results = {
@@ -82,6 +82,166 @@ class ResultAnalyzer:
         
         self.analysis_results = analysis_results
         return analysis_results
+    
+    def _analyze_basic_statistics_multi_trajectory(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析基本统计信息（多轨迹版本）"""
+        total_samples = len(results)
+        
+        # 样本级别统计
+        sample_correct_count = sum(1 for r in results if r.get('sample_correct', False))
+        sample_accuracy = sample_correct_count / total_samples if total_samples > 0 else 0.0
+        
+        # 轨迹级别统计
+        all_trajectories = []
+        for result in results:
+            trajectories = result.get('trajectories', [])
+            all_trajectories.extend(trajectories)
+        
+        total_trajectories = len(all_trajectories)
+        
+        if total_trajectories > 0:
+            # 统计各种结果类型
+            result_counts = {}
+            for result_type in EvaluationResult:
+                result_counts[result_type.value] = sum(
+                    1 for traj in all_trajectories 
+                    if traj.get('evaluation_result') == result_type.value
+                )
+            
+            # 计算轨迹级别准确率
+            trajectory_correct_count = result_counts.get('correct', 0)
+            trajectory_accuracy = trajectory_correct_count / total_trajectories
+            
+            # 统计指标
+            sql_extracted_count = sum(
+                1 for traj in all_trajectories 
+                if traj.get('evaluation_metrics', {}).get('sql_extracted', False)
+            )
+            sql_valid_count = sum(
+                1 for traj in all_trajectories 
+                if traj.get('evaluation_metrics', {}).get('sql_valid', False)
+            )
+            prediction_success_count = sum(
+                1 for traj in all_trajectories 
+                if traj.get('evaluation_metrics', {}).get('prediction_success', False)
+            )
+            ground_truth_success_count = sum(
+                1 for traj in all_trajectories 
+                if traj.get('evaluation_metrics', {}).get('ground_truth_success', False)
+            )
+            
+            # 计算平均轨迹数
+            avg_trajectories_per_sample = total_trajectories / total_samples
+            
+        else:
+            result_counts = {}
+            trajectory_accuracy = 0.0
+            sql_extracted_count = 0
+            sql_valid_count = 0
+            prediction_success_count = 0
+            ground_truth_success_count = 0
+            avg_trajectories_per_sample = 0.0
+        
+        return {
+            "total_samples": total_samples,
+            "total_trajectories": total_trajectories,
+            "avg_trajectories_per_sample": avg_trajectories_per_sample,
+            
+            # 样本级别统计
+            "sample_accuracy": sample_accuracy,
+            "sample_correct_count": sample_correct_count,
+            
+            # 轨迹级别统计
+            "trajectory_accuracy": trajectory_accuracy,
+            "trajectory_correct_count": trajectory_correct_count,
+            "trajectory_result_distribution": result_counts,
+            
+            # 其他指标
+            "sql_extraction_rate": sql_extracted_count / total_trajectories if total_trajectories > 0 else 0.0,
+            "sql_validity_rate": sql_valid_count / total_trajectories if total_trajectories > 0 else 0.0,
+            "prediction_success_rate": prediction_success_count / total_trajectories if total_trajectories > 0 else 0.0,
+            "ground_truth_success_rate": ground_truth_success_count / total_trajectories if total_trajectories > 0 else 0.0
+        }
+    
+    def _analyze_error_types_multi_trajectory(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析错误类型（多轨迹版本）"""
+        error_types = {}
+        error_messages = []
+        
+        for result in results:
+            trajectories = result.get('trajectories', [])
+            for traj in trajectories:
+                metrics = traj.get('evaluation_metrics', {})
+                error_type = metrics.get('error_type')
+                error_message = metrics.get('error_message')
+                
+                if error_type:
+                    error_types[error_type] = error_types.get(error_type, 0) + 1
+                    
+                    if error_message:
+                        error_messages.append({
+                            "type": error_type,
+                            "message": error_message
+                        })
+        
+        # 分析最常见的错误
+        most_common_errors = sorted(error_types.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        return {
+            "error_type_distribution": error_types,
+            "most_common_errors": most_common_errors,
+            "total_errors": len(error_messages),
+            "error_examples": error_messages[:20]  # 取前20个错误示例
+        }
+    
+    def _analyze_performance_multi_trajectory(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析性能指标（多轨迹版本）"""
+        execution_times = []
+        
+        for result in results:
+            trajectories = result.get('trajectories', [])
+            for traj in trajectories:
+                metrics = traj.get('evaluation_metrics', {})
+                exec_time = metrics.get('execution_time', 0)
+                if exec_time > 0:
+                    execution_times.append(exec_time)
+        
+        if not execution_times:
+            return {"error": "No execution time data available"}
+        
+        # 计算统计指标
+        avg_time = statistics.mean(execution_times)
+        median_time = statistics.median(execution_times)
+        min_time = min(execution_times)
+        max_time = max(execution_times)
+        
+        return {
+            "avg_execution_time": avg_time,
+            "median_execution_time": median_time,
+            "min_execution_time": min_time,
+            "max_execution_time": max_time,
+            "total_execution_time": sum(execution_times),
+            "samples_with_time_data": len(execution_times)
+        }
+    
+    def _analyze_by_difficulty_multi_trajectory(self, results: List[Dict[str, Any]], 
+                                               sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """按难度分析结果（多轨迹版本）"""
+        return {"note": "Difficulty analysis not implemented for multi-trajectory"}
+    
+    def _analyze_by_data_source_multi_trajectory(self, results: List[Dict[str, Any]], 
+                                                sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """按数据源分析结果（多轨迹版本）"""
+        return {"note": "Data source analysis not implemented for multi-trajectory"}
+    
+    def _analyze_time_distribution_multi_trajectory(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """分析时间分布（多轨迹版本）"""
+        return {"note": "Time distribution analysis not implemented for multi-trajectory"}
+    
+    def _comprehensive_analysis_multi_trajectory(self, results: List[Dict[str, Any]], 
+                                                sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """综合分析（多轨迹版本）"""
+        return {"note": "Comprehensive analysis not implemented for multi-trajectory"}
     
     def _analyze_basic_statistics(self, results: List[Tuple[EvaluationResult, EvaluationMetrics]]) -> Dict[str, Any]:
         """分析基本统计信息"""
@@ -429,8 +589,21 @@ class ResultAnalyzer:
         basic_stats = self.analysis_results["basic_statistics"]
         report_lines.append("Basic Statistics:")
         report_lines.append("-" * 20)
-        report_lines.append(f"Overall Accuracy: {basic_stats['accuracy']:.4f}")
-        report_lines.append(f"Correct: {basic_stats['correct_count']}")
+        
+        # 检查是否是多轨迹分析
+        if 'sample_accuracy' in basic_stats:
+            # 多轨迹分析
+            report_lines.append(f"Total Trajectories: {basic_stats['total_trajectories']}")
+            report_lines.append(f"Avg Trajectories per Sample: {basic_stats['avg_trajectories_per_sample']:.2f}")
+            report_lines.append(f"Sample-level Accuracy: {basic_stats['sample_accuracy']:.4f}")
+            report_lines.append(f"Trajectory-level Accuracy: {basic_stats['trajectory_accuracy']:.4f}")
+            report_lines.append(f"Sample Correct: {basic_stats['sample_correct_count']}")
+            report_lines.append(f"Trajectory Correct: {basic_stats['trajectory_correct_count']}")
+        else:
+            # 单轨迹分析
+            report_lines.append(f"Overall Accuracy: {basic_stats['accuracy']:.4f}")
+            report_lines.append(f"Correct: {basic_stats['correct_count']}")
+        
         report_lines.append(f"SQL Extraction Rate: {basic_stats['sql_extraction_rate']:.4f}")
         report_lines.append(f"SQL Validity Rate: {basic_stats['sql_validity_rate']:.4f}")
         report_lines.append(f"Prediction Success Rate: {basic_stats['prediction_success_rate']:.4f}")
@@ -443,7 +616,8 @@ class ResultAnalyzer:
             report_lines.append("-" * 20)
             report_lines.append(f"Average Execution Time: {perf_analysis['avg_execution_time']:.4f}s")
             report_lines.append(f"Median Execution Time: {perf_analysis['median_execution_time']:.4f}s")
-            report_lines.append(f"95th Percentile: {perf_analysis['percentiles']['p95']:.4f}s")
+            if 'percentiles' in perf_analysis:
+                report_lines.append(f"95th Percentile: {perf_analysis['percentiles']['p95']:.4f}s")
             report_lines.append("")
         
         # 错误分析
@@ -459,17 +633,22 @@ class ResultAnalyzer:
         comprehensive = self.analysis_results["comprehensive_analysis"]
         report_lines.append("Comprehensive Analysis:")
         report_lines.append("-" * 20)
-        report_lines.append(f"Performance Grade: {comprehensive['performance_grade']}")
         
-        if comprehensive["main_failure_reasons"]:
+        if 'performance_grade' in comprehensive:
+            report_lines.append(f"Performance Grade: {comprehensive['performance_grade']}")
+        
+        if comprehensive.get("main_failure_reasons"):
             report_lines.append("Main Failure Reasons:")
             for reason in comprehensive["main_failure_reasons"]:
                 report_lines.append(f"  - {reason}")
         
-        if comprehensive["recommendations"]:
+        if comprehensive.get("recommendations"):
             report_lines.append("Recommendations:")
             for rec in comprehensive["recommendations"]:
                 report_lines.append(f"  - {rec}")
+        
+        if comprehensive.get("note"):
+            report_lines.append(f"Note: {comprehensive['note']}")
         
         report_lines.append("")
         report_lines.append("=" * 60)

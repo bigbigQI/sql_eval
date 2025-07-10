@@ -82,7 +82,7 @@ class SQLExtractor:
         Returns:
             提取的SQL查询，如果未找到则返回None
         """
-        print("response_text:", response_text)
+        # print("response_text:", response_text)
         if not response_text:
             return None
         

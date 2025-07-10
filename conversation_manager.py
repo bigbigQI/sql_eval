@@ -57,7 +57,9 @@ class ConversationManager:
     """多轮对话管理器，负责与SGLang服务器通信和对话状态管理"""
     
     def __init__(self, server_url: str, sql_tool_client: SQLToolClient, 
-                 max_turns: int = 6, timeout: int = 300):
+                 max_turns: int = 6, timeout: int = 300,
+                 model_name: str = "qwen2.5-7b-instruct", temperature: float = 0.6,
+                 max_tokens: int = 30000, stream: bool = False):
         """
         初始化对话管理器
         
@@ -66,11 +68,21 @@ class ConversationManager:
             sql_tool_client: SQL工具客户端
             max_turns: 最大对话轮数
             timeout: 请求超时时间
+            model_name: 模型名称
+            temperature: 温度系数
+            max_tokens: 最大token数
+            stream: 是否启用流式输出
         """
         self.server_url = server_url.rstrip('/')
         self.sql_tool_client = sql_tool_client
         self.max_turns = max_turns
         self.timeout = timeout
+        
+        # 模型参数
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.stream = stream
         
         # 对话状态
         self.state = ConversationState.PENDING
@@ -172,13 +184,13 @@ class ConversationManager:
             raise RuntimeError("Client not initialized. Use async context manager.")
         
         try:
-                        # 构造请求参数
+            # 构造请求参数
             request_params = {
-                "model": "huggingface_20",  # SGLang通常使用default作为模型名
+                "model": self.model_name,
                 "messages": messages,
-                "temperature": 0.6,
-                "max_tokens": 30000,
-                "stream": False
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "stream": self.stream
             }
             
             if tools:

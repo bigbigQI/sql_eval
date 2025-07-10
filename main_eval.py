@@ -130,13 +130,13 @@ class Text2SQLEvaluationRunner:
     
     async def run_single_evaluation(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         """
-        运行单个样本的评估
+        运行单个样本的评估，生成 n 条轨迹
         
         Args:
             sample: 样本数据
             
         Returns:
-            评估结果
+            评估结果（包含多条轨迹）
         """
         sample_id = sample.get('id', 'unknown')
         
@@ -144,64 +144,111 @@ class Text2SQLEvaluationRunner:
             # 准备样本数据
             prepared_sample = self.data_processor.prepare_sample(sample)
             
-            # 运行对话
-            async with ConversationManager(
-                server_url=self.args.server_url,
-                sql_tool_client=self.sql_tool_client,
-                max_turns=self.args.max_turns,
-                timeout=self.args.conversation_timeout
-            ) as conversation_manager:
-                
-                conversation_result = await conversation_manager.run_conversation(
-                    initial_messages=prepared_sample['messages'],
-                    db_id=sample['db_id'],
-                    data_source=sample['data_source']
-                )
+            # 运行 n 次轨迹
+            trajectories = []
+            for trajectory_idx in range(self.args.n):
+                try:
+                    # 运行对话
+                    async with ConversationManager(
+                        server_url=self.args.server_url,
+                        sql_tool_client=self.sql_tool_client,
+                        max_turns=self.args.max_turns,
+                        timeout=self.args.conversation_timeout,
+                        model_name=self.args.model_name,
+                        temperature=self.args.temperature,
+                        max_tokens=self.args.max_tokens,
+                        stream=self.args.stream
+                    ) as conversation_manager:
+                        
+                        conversation_result = await conversation_manager.run_conversation(
+                            initial_messages=prepared_sample['messages'],
+                            db_id=sample['db_id'],
+                            data_source=sample['data_source']
+                        )
+                    
+                    # 提取最终响应
+                    if conversation_result.get('success', False):
+                        final_response = conversation_result.get('final_response', '')
+                        conversation_history = conversation_result.get('conversation_history', [])
+                        turns = conversation_result.get('turns', 0)
+                        tool_calls = conversation_result.get('tool_calls', 0)
+                    else:
+                        final_response = ''
+                        conversation_history = conversation_result.get('conversation_history', [])
+                        turns = conversation_result.get('turns', 0)
+                        tool_calls = 0
+                    
+                    # 评估结果
+                    eval_result, eval_metrics = self.evaluator.evaluate_single_sample(
+                        prediction_text=final_response,
+                        ground_truth_sql=sample['ground_truth_sql'],
+                        db_id=sample['db_id'],
+                        data_source=sample['data_source']
+                    )
+                    
+                    # 构造轨迹结果
+                    trajectory_result = {
+                        'trajectory_id': trajectory_idx,
+                        'success': conversation_result.get('success', False),
+                        'final_response': final_response,
+                        'conversation_history': conversation_history,
+                        'turns': turns,
+                        'tool_calls': tool_calls,
+                        'evaluation_result': eval_result.value,
+                        'evaluation_metrics': {
+                            'execution_accuracy': eval_metrics.execution_accuracy,
+                            'format_accuracy': eval_metrics.format_accuracy,
+                            'sql_extracted': eval_metrics.sql_extracted,
+                            'sql_valid': eval_metrics.sql_valid,
+                            'prediction_success': eval_metrics.prediction_success,
+                            'ground_truth_success': eval_metrics.ground_truth_success,
+                            'execution_time': eval_metrics.execution_time,
+                            'error_type': eval_metrics.error_type,
+                            'error_message': eval_metrics.error_message
+                        }
+                    }
+                    
+                    trajectories.append(trajectory_result)
+                    
+                except Exception as e:
+                    logger.error(f"Error in trajectory {trajectory_idx} for sample {sample_id}: {e}")
+                    
+                    # 添加错误轨迹结果
+                    error_trajectory = {
+                        'trajectory_id': trajectory_idx,
+                        'success': False,
+                        'error': str(e),
+                        'evaluation_result': EvaluationResult.ERROR.value,
+                        'evaluation_metrics': {
+                            'execution_accuracy': False,
+                            'format_accuracy': False,
+                            'sql_extracted': False,
+                            'sql_valid': False,
+                            'prediction_success': False,
+                            'ground_truth_success': False,
+                            'execution_time': 0.0,
+                            'error_type': 'trajectory_error',
+                            'error_message': str(e)
+                        }
+                    }
+                    trajectories.append(error_trajectory)
             
-            # 提取最终响应
-            if conversation_result.get('success', False):
-                final_response = conversation_result.get('final_response', '')
-                conversation_history = conversation_result.get('conversation_history', [])
-                turns = conversation_result.get('turns', 0)
-                tool_calls = conversation_result.get('tool_calls', 0)
-            else:
-                final_response = ''
-                conversation_history = conversation_result.get('conversation_history', [])
-                turns = conversation_result.get('turns', 0)
-                tool_calls = 0
-            
-            # 评估结果
-            eval_result, eval_metrics = self.evaluator.evaluate_single_sample(
-                prediction_text=final_response,
-                ground_truth_sql=sample['ground_truth_sql'],
-                db_id=sample['db_id'],
-                data_source=sample['data_source']
+            # 计算样本级别的结果（只要有一条轨迹正确就算正确）
+            sample_correct = any(
+                traj['evaluation_result'] == EvaluationResult.CORRECT.value 
+                for traj in trajectories
             )
             
             # 构造完整结果
             result = {
                 'sample_id': sample_id,
-                'success': conversation_result.get('success', False),
-                'final_response': final_response,
-                'conversation_history': conversation_history,
-                'turns': turns,
-                'tool_calls': tool_calls,
-                'evaluation_result': eval_result.value,
-                'evaluation_metrics': {
-                    'execution_accuracy': eval_metrics.execution_accuracy,
-                    'format_accuracy': eval_metrics.format_accuracy,
-                    'sql_extracted': eval_metrics.sql_extracted,
-                    'sql_valid': eval_metrics.sql_valid,
-                    'prediction_success': eval_metrics.prediction_success,
-                    'ground_truth_success': eval_metrics.ground_truth_success,
-                    'execution_time': eval_metrics.execution_time,
-                    'error_type': eval_metrics.error_type,
-                    'error_message': eval_metrics.error_message
-                },
+                'trajectories': trajectories,
+                'sample_correct': sample_correct,
+                'n_trajectories': len(trajectories),
                 'sample_data': sample
             }
             
-            logger.debug(f"Completed evaluation for sample {sample_id}: {eval_result.value}")
+            logger.debug(f"Completed evaluation for sample {sample_id}: {len(trajectories)} trajectories, sample_correct: {sample_correct}")
             return result
             
         except Exception as e:
@@ -210,20 +257,10 @@ class Text2SQLEvaluationRunner:
             # 返回错误结果
             return {
                 'sample_id': sample_id,
-                'success': False,
+                'trajectories': [],
+                'sample_correct': False,
+                'n_trajectories': 0,
                 'error': str(e),
-                'evaluation_result': EvaluationResult.ERROR.value,
-                'evaluation_metrics': {
-                    'execution_accuracy': False,
-                    'format_accuracy': False,
-                    'sql_extracted': False,
-                    'sql_valid': False,
-                    'prediction_success': False,
-                    'ground_truth_success': False,
-                    'execution_time': 0.0,
-                    'error_type': 'evaluation_error',
-                    'error_message': str(e)
-                },
                 'sample_data': sample
             }
     
@@ -260,20 +297,10 @@ class Text2SQLEvaluationRunner:
                     # 创建错误结果
                     error_result = {
                         'sample_id': 'unknown',
-                        'success': False,
-                        'error': str(result),
-                        'evaluation_result': EvaluationResult.ERROR.value,
-                        'evaluation_metrics': {
-                            'execution_accuracy': False,
-                            'format_accuracy': False,
-                            'sql_extracted': False,
-                            'sql_valid': False,
-                            'prediction_success': False,
-                            'ground_truth_success': False,
-                            'execution_time': 0.0,
-                            'error_type': 'batch_error',
-                            'error_message': str(result)
-                        }
+                        'trajectories': [],
+                        'sample_correct': False,
+                        'n_trajectories': 0,
+                        'error': str(result)
                     }
                     results.append(error_result)
                 else:
@@ -318,26 +345,8 @@ class Text2SQLEvaluationRunner:
             # 4. 分析结果
             logger.info("Analyzing results...")
             
-            # 转换为评估器格式
-            evaluation_results = []
-            for result in results:
-                eval_result = EvaluationResult(result['evaluation_result'])
-                eval_metrics_data = result['evaluation_metrics']
-                eval_metrics = EvaluationMetrics(
-                    execution_accuracy=eval_metrics_data['execution_accuracy'],
-                    format_accuracy=eval_metrics_data['format_accuracy'],
-                    sql_extracted=eval_metrics_data['sql_extracted'],
-                    sql_valid=eval_metrics_data['sql_valid'],
-                    prediction_success=eval_metrics_data['prediction_success'],
-                    ground_truth_success=eval_metrics_data['ground_truth_success'],
-                    execution_time=eval_metrics_data['execution_time'],
-                    error_type=eval_metrics_data['error_type'],
-                    error_message=eval_metrics_data['error_message']
-                )
-                evaluation_results.append((eval_result, eval_metrics))
-            
-            # 分析结果
-            analysis = self.result_analyzer.analyze_results(evaluation_results, samples)
+            # 分析结果（传递新的数据结构）
+            analysis = self.result_analyzer.analyze_results(results, samples)
             
             # 5. 保存分析结果
             analysis_path = self.output_dir / f"analysis_{self.run_id}.json"
@@ -353,7 +362,10 @@ class Text2SQLEvaluationRunner:
             print("="*60)
             print(f"Run ID: {self.run_id}")
             print(f"Total Samples: {len(samples)}")
-            print(f"Overall Accuracy: {analysis['basic_statistics']['accuracy']:.4f}")
+            print(f"Total Trajectories: {analysis['basic_statistics']['total_trajectories']}")
+            print(f"Avg Trajectories per Sample: {analysis['basic_statistics']['avg_trajectories_per_sample']:.2f}")
+            print(f"Sample-level Accuracy: {analysis['basic_statistics']['sample_accuracy']:.4f}")
+            print(f"Trajectory-level Accuracy: {analysis['basic_statistics']['trajectory_accuracy']:.4f}")
             print(f"SQL Extraction Rate: {analysis['basic_statistics']['sql_extraction_rate']:.4f}")
             print(f"Results saved to: {self.output_dir}")
             print("="*60)
@@ -373,21 +385,21 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset_path",
         type=str,
-        required=True,
+        default='spider_data/filter_test.json',
         help="Path to the evaluation dataset file"
     )
     
     parser.add_argument(
         "--db_root_path",
         type=str,
-        required=True,
+        default='spider_data',
         help="Root path to the database files"
     )
     
     parser.add_argument(
         "--server_url",
         type=str,
-        required=True,
+        default='http://localhost:30000',
         help="SGLang server URL (e.g., http://localhost:8001)"
     )
     
@@ -451,9 +463,45 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log_level",
         type=str,
-        default="INFO",
+        default="ERROR",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO)"
+    )
+    
+    # 模型参数
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="huggingface_60",
+        help="Model name for SGLang server (default: huggingface_60)"
+    )
+    
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.6,
+        help="Temperature for model generation (default: 0.6)"
+    )
+    
+    parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=30000,
+        help="Maximum tokens for model generation (default: 30000)"
+    )
+    
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        default=False,
+        help="Enable streaming for model generation (default: False)"
+    )
+    
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=4,
+        help="Number of trajectories to generate per sample (default: 1)"
     )
     
     return parser
@@ -503,6 +551,19 @@ def validate_arguments(args: argparse.Namespace) -> bool:
     
     if args.concurrent_requests <= 0:
         print(f"Error: Concurrent requests must be positive: {args.concurrent_requests}")
+        return False
+    
+    # 检查模型参数
+    if args.temperature < 0.0 or args.temperature > 2.0:
+        print(f"Error: Temperature must be between 0.0 and 2.0: {args.temperature}")
+        return False
+    
+    if args.max_tokens <= 0:
+        print(f"Error: Max tokens must be positive: {args.max_tokens}")
+        return False
+    
+    if args.n <= 0:
+        print(f"Error: Number of trajectories must be positive: {args.n}")
         return False
     
     return True
